@@ -314,7 +314,7 @@ function oaPost(path, payload) {
 function friendlyError(e) {
   const s = e?.message || String(e);
   if (/fetch failed|ECONNREFUSED|ENOTFOUND|getaddrinfo/i.test(s)) {
-    return '⚠️ AI chưa kết nối được từ server này. API cấu hình hiện tại không truy cập được từ host public — admin hãy đặt biến môi trường ZAI_OPENAI_JSON với API key public (api.z.ai) hoặc chạy site ở môi trường có truy cập API nội bộ.';
+    return '⚠️ AI chưa kết nối được lúc này (cả API cấu hình và backend dự phòng đều lỗi). Admin hãy đặt biến môi trường ZAI_OPENAI_JSON với API key public (api.z.ai) để kích hoạt GLM, hoặc thử lại sau ít phút.';
   }
   return s;
 }
@@ -448,6 +448,171 @@ async function pipeStream(stream, res, send) {
   res.end();
 }
 
+// ---------- Fallback AI public miễn phí (Pollinations + DuckDuckGo/Bing) ----------
+// Khi API cấu hình không tới được từ host hiện tại (vd: Render không vào được mạng nội bộ z.ai),
+// server tự chuyển sang backend public: chat/vision (Pollinations, chuẩn OpenAI), vẽ ảnh (flux),
+// tìm web (DuckDuckGo lite → Bing). Khi bạn có API key public, đặt ZAI_OPENAI_JSON để dùng GLM thật.
+const FREE_AI = process.env.FREE_FALLBACK !== '0'; // tắt bằng FREE_FALLBACK=0
+const FORCE_FREE = process.env.AI_FORCE_FREE === '1'; // ép dùng backend public (chủ yếu để test)
+let internalApiDown = false; // sau lần đầu lỗi mạng nội bộ → đi thẳng backend public cho nhanh
+const FREE_CHAT_URL = 'https://text.pollinations.ai/openai';
+const FREE_IMG_BASE = 'https://image.pollinations.ai/prompt/';
+function netErr(e) { return /fetch failed|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|getaddrinfo|socket hang|network/i.test(e?.message || String(e)); }
+async function freeFetch(url, opts = {}, tries = 3) {
+  let lastErr = null, lastStatus = 0;
+  for (let i = 0; i < tries; i++) {
+    if (i) await new Promise((s) => setTimeout(s, 1500 * i)); // backoff tăng dần
+    try {
+      const r = await fetch(url, { ...opts, headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', ...(opts.headers || {}) } });
+      if (r.status === 429 || r.status === 503 || r.status === 502) { lastStatus = r.status; await new Promise((s) => setTimeout(s, 2500)); continue; }
+      return r;
+    } catch (e) { lastErr = e; }
+  }
+  if (lastStatus) throw new Error('Backend miễn phí đang quá tải (HTTP ' + lastStatus + ') — thử lại sau ít giây nhé.');
+  throw lastErr || new Error('freeFetch lỗi');
+}
+async function freeChatOnce(messages, model, maxTokens) {
+  const r = await freeFetch(FREE_CHAT_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: model || 'openai', messages, max_tokens: maxTokens || 600, referrer: 'dungle-ai' }),
+  });
+  if (!r.ok) throw new Error('Free chat API trả lỗi ' + r.status);
+  const j = await r.json();
+  return j?.choices?.[0]?.message?.content || '';
+}
+async function freeBrain(res, lastQuestion, hadSearch) {
+  try {
+    const sys = 'Bạn là module phân tích của Dungle AI (bộ não phụ trợ). Nhiệm vụ: đọc câu hỏi và nêu quá trình xử lý trong 2-4 câu ngắn tiếng Việt, gồm: (1) hiểu yêu cầu là gì, (2) kế hoạch/bước sẽ làm, (3) kết luận hướng trả lời. KHÔNG trả lời nội dung câu hỏi, chỉ phân tích cách làm. Viết mạch lạc, không markdown, không xuống dòng.';
+    const text = await freeChatOnce([
+      { role: 'system', content: sys },
+      { role: 'user', content: String(lastQuestion).slice(0, 1200) + (hadSearch ? ' (Đã có kết quả tìm kiếm web kèm theo để đối chiếu.)' : '') },
+    ], 'openai', 320);
+    if (text.trim()) sseSend(res, { type: 'analysis', text: text.trim().slice(0, 700) });
+  } catch { /* bỏ qua nếu phân tích lỗi */ }
+}
+function stripTags(t) {
+  return String(t).replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'").replace(/&nbsp;/g, ' ').trim();
+}
+async function freeSearch(query, num = 6) {
+  // Chuỗi tìm kiếm không cần key: Google News RSS (ổn định, tin mới) → Bing News RSS → DuckDuckGo lite
+  const q = encodeURIComponent(String(query).slice(0, 300));
+  let out = [];
+  try {
+    const r = await freeFetch('https://news.google.com/rss/search?q=' + q + '&hl=vi&gl=VN&ceid=VN:vi', {}, 2);
+    const xml = await r.text();
+    for (const b of xml.split('<item>').slice(1)) {
+      const title = stripTags((b.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || '');
+      const link = stripTags((b.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '');
+      const date = stripTags((b.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1] || '').replace(/^[A-Za-z]{3},\s*/, '').slice(0, 11);
+      const src = stripTags((b.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1] || '');
+      if (!title || !/^https?:/i.test(link)) continue;
+      // Tiêu đề Google News dạng "Tiêu đề bài - Tên báo" khi thiếu <source>
+      let name = title, source = src;
+      if (!source && title.includes(' - ')) { const p = title.split(' - '); source = p.pop(); name = p.join(' - '); }
+      if (out.some((x) => x.name === name)) continue;
+      out.push({ name: name.slice(0, 140), url: link, snippet: ((source ? 'Nguồn: ' + source : '') + (date ? ' · ' + date : '')).trim(), host: source || 'Google News' });
+      if (out.length >= num) break;
+    }
+  } catch { /* thử Bing News bên dưới */ }
+  if (!out.length) try {
+    const r = await freeFetch('https://www.bing.com/news/search?q=' + q + '&format=rss&setlang=vi', {}, 1);
+    const xml = await r.text();
+    for (const b of xml.split('<item>').slice(1)) {
+      const title = stripTags((b.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || '');
+      const link = stripTags((b.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '');
+      if (!title || !/^https?:/i.test(link)) continue;
+      out.push({ name: title.slice(0, 140), url: link, snippet: '', host: link.replace(/^https?:\/\/(www\.)?/i, '').split('/')[0] });
+      if (out.length >= num) break;
+    }
+  } catch { /* bỏ qua */ }
+  if (!out.length) try {
+    const r = await freeFetch('https://lite.duckduckgo.com/lite/?q=' + q, {}, 1);
+    const html = await r.text();
+    const anchors = [
+      ...[...html.matchAll(/href="(https?:\/\/[^"]+)"[^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>/gi)],
+      ...[...html.matchAll(/class=['"]result-link['"][^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)],
+    ];
+    const snips = [...html.matchAll(/class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/gi)].map((m) => stripTags(m[1]));
+    let k = 0;
+    for (const m of anchors) {
+      let url = m[1];
+      const name = stripTags(m[2]);
+      const ud = url.match(/[?&]uddg=([^&]+)/); // link redirect của DDG → giải mã URL thật
+      if (ud) { try { url = decodeURIComponent(ud[1]); } catch {} }
+      if (!/^https?:/i.test(url) || !name || /duckduckgo\.com/i.test(url)) continue;
+      if (out.some((x) => x.url === url)) continue;
+      out.push({ name: name.slice(0, 120), url, snippet: (snips[k] || '').slice(0, 200), host: url.replace(/^https?:\/\/(www\.)?/i, '').split('/')[0] });
+      k++;
+      if (out.length >= num) break;
+    }
+  } catch { /* bỏ qua */ }
+  return out;
+}
+async function handleChatFree(res, user, body, mode, deepThink, history, images) {
+  sseInit(res);
+  const send = (o) => sseSend(res, o);
+  try {
+    send({ type: 'phase', phase: 'read' });
+    send({ type: 'model', name: mode === 'flash' ? 'AI miễn phí · nhanh' : 'AI miễn phí' });
+    const lastUser = [...history].reverse().find((m) => m.role === 'user')?.content || '';
+    if (mode === 'agent' || body.search) {
+      send({ type: 'status', text: 'Đang tìm kiếm thông tin trên web…' });
+      try {
+        const srcs = await freeSearch(lastUser, 6);
+        if (srcs.length) {
+          send({ type: 'sources', sources: srcs });
+          const webCtx = 'KẾT QUẢ TÌM KIẾM WEB (nguồn mới nhất, hãy trích dẫn kèm link khi dùng):\n' +
+            srcs.map((s, i) => '[' + (i + 1) + '] ' + s.name + '\nURL: ' + s.url + '\nTrích: ' + s.snippet).join('\n---\n');
+          history.push({ role: 'user', content: webCtx + '\n\nCÂU HỎI NGƯỜI DÙNG: ' + lastUser });
+        } else send({ type: 'status', text: 'Không tìm được web, trả lời bằng kiến thức sẵn có.' });
+      } catch { send({ type: 'status', text: 'Không tìm được web, trả lời bằng kiến thức sẵn có.' }); }
+    }
+    send({ type: 'phase', phase: 'analyze' });
+    if (deepThink || mode === 'agent') await freeBrain(res, lastUser + (images && images.length ? ' (+ người dùng gửi kèm ảnh)' : ''), mode === 'agent' || body.search);
+    send({ type: 'phase', phase: 'answer' });
+    const sysParts = [DUNGLE_IDENTITY];
+    if (mode === 'agent') sysParts.push(AGENT_RULE);
+    if (user && user.role === 'admin' && process.env.DUNGLE_PERSONA) sysParts.push('GHI CHÚ NHÂN CÁCH: ' + process.env.DUNGLE_PERSONA);
+    if (images && images.length) send({ type: 'status', text: 'Backend miễn phí chưa đọc được ảnh — trả lời theo nội dung chữ.' });
+    const r = await freeFetch(FREE_CHAT_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: mode === 'flash' ? 'openai-fast' : 'openai',
+        messages: [{ role: 'system', content: sysParts.join('\n\n') }, ...history],
+        stream: true, referrer: 'dungle-ai',
+      }),
+    });
+    if (!r.ok) throw new Error('Free chat API trả lỗi ' + r.status);
+    consumeUse(user);
+    await pipeStream(r.body, res, send);
+  } catch (e) {
+    send({ type: 'error', text: friendlyError(e) });
+    send({ type: 'done' });
+    res.end();
+  }
+}
+async function handleImageFree(res, user, prompt, size) {
+  const parts = String(size || '1024x1024').split('x');
+  const w = /^\d{2,4}$/.test(parts[0]) ? parts[0] : '1024';
+  const h = /^\d{2,4}$/.test(parts[1]) ? parts[1] : '1024';
+  try {
+    const url = FREE_IMG_BASE + encodeURIComponent(String(prompt).slice(0, 500)) +
+      '?width=' + w + '&height=' + h + '&nologo=true&model=flux&referrer=dungle-ai';
+    const r = await freeFetch(url, {}, 3);
+    if (!r.ok) throw new Error('Free image API trả lỗi ' + r.status);
+    const b64 = Buffer.from(await r.arrayBuffer()).toString('base64');
+    if (!b64) return json(res, 502, { error: 'API không trả về ảnh' });
+    consumeUse(user);
+    json(res, 200, { base64: b64 });
+  } catch (e) { json(res, 500, { error: friendlyError(e) }); }
+}
+async function handleSearchFree(res, query, num) {
+  try { json(res, 200, { results: await freeSearch(query, num || 8) }); }
+  catch (e) { json(res, 500, { error: friendlyError(e) }); }
+}
+
 // ---------- /api/chat ----------
 async function handleChat(req, res, user) {
   const body = await readBody(req);
@@ -457,6 +622,7 @@ async function handleChat(req, res, user) {
   const history = normalizeMessages(messages);
   if (!history.length && !(images && images.length)) return json(res, 400, { error: 'Thiếu nội dung tin nhắn' });
   if (OPENAI_CFG) return handleChatPublic(res, user, body, mode, deepThink, history, images);
+  if (FORCE_FREE || (FREE_AI && internalApiDown)) return handleChatFree(res, user, body, mode, deepThink, history, images);
 
   sseInit(res);
   const send = (o) => sseSend(res, o);
@@ -516,6 +682,12 @@ async function handleChat(req, res, user) {
     consumeUse(user);
     await pipeStream(stream, res, send);
   } catch (e) {
+    // API cấu hình không tới được từ host này → chuyển sang backend public miễn phí
+    if (FREE_AI && netErr(e)) {
+      internalApiDown = true;
+      console.log('  [Fallback] API nội bộ không truy cập được → chuyển backend public miễn phí');
+      return handleChatFree(res, user, body, mode, deepThink, history, images);
+    }
     send({ type: 'error', text: friendlyError(e) });
     send({ type: 'done' });
     res.end();
@@ -527,6 +699,7 @@ async function handleImage(req, res, user) {
   const { prompt, size } = await readBody(req);
   if (!prompt) return json(res, 400, { error: 'Thiếu mô tả ảnh' });
   if (OPENAI_CFG) return handleImagePublic(res, user, prompt, size);
+  if (FORCE_FREE || (FREE_AI && internalApiDown)) return handleImageFree(res, user, prompt, size);
   const okSizes = ['1024x1024', '768x1344', '864x1152', '1344x768', '1152x864', '1440x720', '720x1440'];
   try {
     const zai = await getZAI();
@@ -539,6 +712,11 @@ async function handleImage(req, res, user) {
     consumeUse(user);
     json(res, 200, { base64: b64 });
   } catch (e) {
+    if (FREE_AI && netErr(e)) {
+      internalApiDown = true;
+      console.log('  [Fallback] API nội bộ không truy cập được → vẽ ảnh bằng backend public miễn phí');
+      return handleImageFree(res, user, prompt, size);
+    }
     json(res, 500, { error: friendlyError(e) });
   }
 }
@@ -574,16 +752,25 @@ async function handleSearch(req, res) {
     } catch (e) { json(res, 500, { error: friendlyError(e) }); }
     return;
   }
+  if (FORCE_FREE || (FREE_AI && internalApiDown)) return handleSearchFree(res, query, num);
   try {
     const zai = await getZAI();
     const results = await zai.functions.invoke('web_search', { query: String(query).slice(0, 400), num: num || 8, recency_days });
     json(res, 200, { results });
-  } catch (e) { json(res, 500, { error: e?.message || String(e) }); }
+  } catch (e) {
+    if (FREE_AI && netErr(e)) {
+      internalApiDown = true;
+      console.log('  [Fallback] API nội bộ không truy cập được → tìm web bằng backend public miễn phí');
+      return handleSearchFree(res, query, num);
+    }
+    json(res, 500, { error: e?.message || String(e) });
+  }
 }
 async function handleTTS(req, res) {
   const { text, voice, speed } = await readBody(req);
   if (!text) return json(res, 400, { error: 'Thiếu văn bản' });
   if (OPENAI_CFG) return json(res, 503, { error: 'Tính năng giọng nói cần API nội bộ của z.ai — chưa khả dụng trên server public này.' });
+  if (FORCE_FREE || (FREE_AI && internalApiDown)) return json(res, 503, { error: 'Giọng nói server không khả dụng — dùng giọng đọc của trình duyệt.', freeFallback: true });
   try {
     const zai = await getZAI();
     const resp = await zai.audio.tts.create({ input: String(text).slice(0, 1500), voice, speed, response_format: 'wav' });
@@ -591,7 +778,13 @@ async function handleTTS(req, res) {
     const ab = await resp.arrayBuffer();
     res.writeHead(200, { 'Content-Type': ct, 'Access-Control-Allow-Origin': '*' });
     res.end(Buffer.from(ab));
-  } catch (e) { json(res, 500, { error: e?.message || String(e) }); }
+  } catch (e) {
+    if (FREE_AI && netErr(e)) {
+      internalApiDown = true;
+      return json(res, 503, { error: 'Giọng nói server không khả dụng — dùng giọng đọc của trình duyệt.', freeFallback: true });
+    }
+    json(res, 500, { error: e?.message || String(e) });
+  }
 }
 async function handleASR(req, res) {
   let { base64 } = await readBody(req);
@@ -601,11 +794,18 @@ async function handleASR(req, res) {
   if (m) base64 = m[1];
   base64 = String(base64).replace(/\s+/g, '');
   if (OPENAI_CFG) return json(res, 503, { error: 'Tính năng nhận dạng giọng nói cần API nội bộ của z.ai — chưa khả dụng trên server public này.' });
+  if (FORCE_FREE || (FREE_AI && internalApiDown)) return json(res, 503, { error: 'Nhận dạng giọng nói server không khả dụng — dùng nhận dạng trực tiếp của trình duyệt.', freeFallback: true });
   try {
     const zai = await getZAI();
     const out = await zai.audio.asr.create({ file_base64: base64 });
     json(res, 200, { text: out?.text || out?.data?.text || '' });
-  } catch (e) { json(res, 500, { error: e?.message || String(e) }); }
+  } catch (e) {
+    if (FREE_AI && netErr(e)) {
+      internalApiDown = true;
+      return json(res, 503, { error: 'Nhận dạng giọng nói server không khả dụng — dùng nhận dạng trực tiếp của trình duyệt.', freeFallback: true });
+    }
+    json(res, 500, { error: e?.message || String(e) });
+  }
 }
 
 // ---------- Auth ----------

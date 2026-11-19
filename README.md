@@ -83,3 +83,17 @@ Mật khẩu được băm scrypt lưu trong `users.json` (tự tạo lần đ�
 - PDF/DOCX chưa đọc trực tiếp — dùng ảnh hoặc file text/code.
 - Lịch sử chat nằm trong trình duyệt (localStorage), server không lưu nội dung chat.
 - Hỏi Dungle AI "bạn là ai / ai tạo ra bạn" → trả lời ngẫu nhiên vui tươi, luôn nhắc tên **Dũng Lê**.
+
+## Biến môi trường (Render/host public)
+
+| Biến | Ý nghĩa |
+| --- | --- |
+| `ZAI_CONFIG_JSON` | Cấu hình API z.ai (JSON) — server tự ghi vào `.z-ai-config` khi khởi động |
+| `ZAI_OPENAI_JSON` | (Khuyến nghị cho Render) API key public chuẩn OpenAI, ví dụ `{"baseUrl":"https://api.z.ai/api/paas/v4","apiKey":"KEY_CUA_BAN"}` → chat/vision/vẽ ảnh dùng GLM thật trên host public |
+| `GITHUB_TOKEN` + `GITHUB_SYNC_REPO` | Đồng bộ `users.json` lên repo private (vd `user/dungleaivip-data`) — tài khoản không mất khi Render spin down |
+| `SESSION_SECRET` | Secret ký cookie — đặt cố định để phiên đăng nhập không bị văng khi restart |
+| `FREE_FALLBACK` | Đặt `0` để tắt backend public miễn phí |
+| `AI_FORCE_FREE` | Đặt `1` để ép dùng backend public miễn phí (test) |
+| `DUNGLE_PERSONA` | (Tùy chọn) ghi chú nhân cách thêm cho admin |
+
+Chuỗi dự phòng AI: API key public (nếu có) → API nội bộ → **backend public miễn phí** (chat Pollinations, vẽ ảnh flux, tìm tin Google News RSS). TTS/ASR khi không có API nội bộ sẽ tự chuyển sang giọng nói/nhận dạng của chính trình duyệt.

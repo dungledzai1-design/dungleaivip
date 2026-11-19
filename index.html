@@ -866,7 +866,7 @@ function msgHTML(m, idx) {
     inner += m.content ? esc(m.content) : '';
   } else {
     const mi = MODE_INFO[m.mode] || MODE_INFO.glm46;
-    inner += '<div class="who">Dungle AI<span class="mtag">' + mi.name + '</span></div>';
+    inner += '<div class="who">Dungle AI<span class="mtag">' + esc(m.mtag || mi.name) + '</span></div>';
     if (m.phase && (!m.done || m.analysis)) inner += brainHTML(m);
     if (m.sources && m.sources.length) inner += '<div class="sources">' + m.sources.map((s) => '<a class="src" href="' + esc(s.url) + '" target="_blank" rel="noopener" title="' + esc(s.name) + '">' + esc((s.name || s.host || '').slice(0, 40)) + '</a>').join('') + '</div>';
     if (m.img) inner += '<img class="genimg" src="' + m.img + '" data-zoom alt="Ảnh Dungle AI vẽ">';
@@ -1145,6 +1145,7 @@ async function runChat(c, am) {
       let ev; try { ev = JSON.parse(t.slice(5)); } catch { continue; }
       if (ev.type === 'phase') { am.phase = ev.phase; if (ev.phase === 'answer' && !am.pinThink) am.pinThink = false; }
       else if (ev.type === 'status') am.status = ev.text;
+      else if (ev.type === 'model') am.mtag = ev.name;
       else if (ev.type === 'sources') { am.sources = ev.sources; am.status = ''; }
       else if (ev.type === 'analysis') { am.analysis = ev.text; am.status = ''; am.analysisAt = Date.now(); }
       else if (ev.type === 'thinking') { am.analysis = (am.analysis || '') + ev.text; am.status = ''; }
@@ -1242,6 +1243,7 @@ async function addFiles(files) {
 
 /* ---------------- Giọng nói ---------------- */
 async function toggleMic() {
+  if (browserRec) { try { browserRec.stop(); } catch {} return; }
   if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1257,6 +1259,7 @@ async function toggleMic() {
       try {
         const resp = await fetch('/api/asr', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ base64: b64 }) });
         const j = await resp.json();
+        if (resp.status === 503 && j.freeFallback) { $('#btnMic').classList.remove('busy'); return browserASR(); }
         if (j.text) { $('#input').value = ($('#input').value ? $('#input').value + ' ' : '') + j.text; autoGrow(); $('#input').focus(); }
         else toast(j.error || 'Không nhận dạng được giọng nói', true);
       } catch (e) { toast('Lỗi ASR: ' + e.message, true); }
@@ -1267,16 +1270,54 @@ async function toggleMic() {
     toast('Đang nghe… bấm lại để đưa vào ô chat');
   } catch (e) { toast('Không truy cập được micro: ' + e.message, true); }
 }
+let browserRec = null;
+function browserASR() {
+  // Nhận dạng giọng nói TRỰC TIẾP bằng trình duyệt (không cần server) — dùng khi backend ASR không khả dụng
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { toast('Trình duyệt này chưa hỗ trợ nhận giọng nói trực tiếp — hãy gõ bàn phím nhé', true); return; }
+  try {
+    const rec = new SR();
+    rec.lang = 'vi-VN'; rec.interimResults = true; rec.continuous = false;
+    let finalTxt = '';
+    browserRec = rec;
+    $('#btnMic').classList.add('busy');
+    toast('Đang nghe trực tiếp bằng trình duyệt… bấm mic để dừng');
+    rec.onresult = (e) => { let t = ''; for (const r of e.results) t += r[0].transcript; finalTxt = t; $('#input').value = t; autoGrow(); };
+    rec.onerror = () => { browserRec = null; $('#btnMic').classList.remove('busy'); toast('Không nghe được — thử lại nhé', true); };
+    rec.onend = () => { browserRec = null; $('#btnMic').classList.remove('busy'); if (finalTxt) { $('#input').focus(); toast('Đã nhận dạng giọng nói bằng trình duyệt'); } };
+    rec.start();
+  } catch (e) { browserRec = null; $('#btnMic').classList.remove('busy'); toast('Không khởi động được nhận giọng nói: ' + e.message, true); }
+}
 let audioEl = null;
 async function speak(text) {
   try {
     if (audioEl) { audioEl.pause(); audioEl = null; }
+    if (window.speechSynthesis && speechSynthesis.speaking) speechSynthesis.cancel();
     toast('Đang tạo giọng nói…');
     const resp = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: text.slice(0, 1400) }) });
-    if (!resp.ok) { const j = await resp.json().catch(() => ({})); throw new Error(j.error || 'TTS lỗi'); }
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      if (resp.status === 503 && j.freeFallback) return browserSpeak(text);
+      throw new Error(j.error || 'TTS lỗi');
+    }
     const blob = await resp.blob();
     audioEl = new Audio(URL.createObjectURL(blob));
     await audioEl.play();
+  } catch (e) { toast('Không đọc được: ' + e.message, true); }
+}
+function browserSpeak(text) {
+  // Đọc bài bằng giọng của trình duyệt (Web Speech API) — không cần server
+  if (!window.speechSynthesis) return toast('Trình duyệt này chưa hỗ trợ đọc giọng nói', true);
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(String(text).slice(0, 1000));
+    const vs = speechSynthesis.getVoices() || [];
+    const v = vs.find((x) => /^vi/i.test(x.lang || '')) || vs.find((x) => /vi[-_]?VN/i.test(x.name || ''));
+    if (v) u.voice = v;
+    u.lang = v ? v.lang : 'vi-VN';
+    u.rate = 1;
+    speechSynthesis.speak(u);
+    toast('Đang đọc bằng giọng trình duyệt');
   } catch (e) { toast('Không đọc được: ' + e.message, true); }
 }
 function copyText(t) {
