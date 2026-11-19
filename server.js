@@ -7,6 +7,7 @@
 //  Chạy:  node server.js  → http://localhost:3000
 // ============================================================
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -110,15 +111,22 @@ function dailyResetAll() {
   return changed;
 }
 function clientIP(req) {
-  // IP thật của máy người dùng. Server đứng sau proxy (Render): x-forwarded-for có dạng
-  // "ip-client-tự-gửi, ip-proxy-thêm" → đi từ PHẢI sang TRÁI, bỏ qua IP nội bộ/proxy,
-  // lấy IP công khai đầu tiên → client không thể giả mạo header để lách giới hạn 1 IP/1 acc.
+  // IP thật của máy user. Production đứng sau Cloudflare (*.onrender.com và custom
+  // domain qua CF): CF luôn ghi đè header CF-Connecting-IP bằng IP thật của máy
+  // kết nối (client không thể giả mạo qua CF) → ưu tiên header này.
+  // Lưu ý: IP edge Cloudflare trong x-forwarded-for ĐỔI LIÊN TỤC theo từng request
+  // (104.x / 172.71.x) nên tuyệt đối không dùng nó làm khoá.
+  const cf = String(req.headers['cf-connecting-ip'] || '').trim().replace(/^::ffff:/, '');
+  if (cf && net.isIP(cf)) return cf;
+  // Không qua CF (chạy local / gọi thẳng origin): Render proxy ghi x-forwarded-for
+  // dạng "ip-client-tự-gửi, ip-proxy-thêm" → đi từ PHẢI sang TRÁI, bỏ qua IP nội
+  // bộ/proxy, lấy IP công khai đầu tiên → client không thể giả mạo header để lách.
   const xf = String(req.headers['x-forwarded-for'] || '');
   const parts = xf.split(',').map((s) => s.trim()).filter(Boolean);
   const isPrivate = (ip) => /^(::1$|f[0-9a-f]{2}:|fe80:|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
   for (let i = parts.length - 1; i >= 0; i--) {
     const ip = parts[i].replace(/^::ffff:/, '');
-    if (!isPrivate(ip)) return ip;
+    if (!isPrivate(ip) && net.isIP(ip)) return ip;
   }
   const sock = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
   return sock || 'unknown'; // chạy local không qua proxy → 127.0.0.1 dùng làm khoá bình thường
