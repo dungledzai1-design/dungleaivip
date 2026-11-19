@@ -284,6 +284,132 @@ function extractDeltas(raw) {
 let zaiInstance = null;
 async function getZAI() { if (!zaiInstance) zaiInstance = await ZAI.create(); return zaiInstance; }
 
+// ---------- Cấu hình AI public (chuẩn OpenAI-compatible, tùy chọn) ----------
+// API nội bộ của z.ai chỉ truy cập được từ mạng nội bộ z.ai (IP riêng 172.25.x.x),
+// nên khi chạy trên Render/host public cần đặt biến môi trường:
+//   ZAI_OPENAI_JSON = {"baseUrl":"https://api.z.ai/api/paas/v4","apiKey":"API_KEY_CỦA_BẠN",
+//                      "chatModel":"glm-4.6","flashModel":"glm-4-flash","visionModel":"glm-4.6v","imageModel":"cogview-4"}
+// → server gọi trực tiếp API chuẩn OpenAI (chat/vision stream, cogview, web_search). Không đặt thì dùng SDK nội bộ như cũ.
+const OPENAI_CFG = (() => {
+  try {
+    const j = JSON.parse(process.env.ZAI_OPENAI_JSON || '');
+    if (!j.baseUrl || !j.apiKey) return null;
+    return {
+      base: String(j.baseUrl).replace(/\/+$/, ''),
+      key: String(j.apiKey),
+      chat: j.chatModel || 'glm-4.6',
+      flash: j.flashModel || 'glm-4-flash',
+      vision: j.visionModel || 'glm-4.6v',
+      image: j.imageModel || 'cogview-4',
+    };
+  } catch { return null; }
+})();
+function oaPost(path, payload) {
+  return fetch(OPENAI_CFG.base + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + OPENAI_CFG.key },
+    body: JSON.stringify(payload),
+  });
+}
+function friendlyError(e) {
+  const s = e?.message || String(e);
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|getaddrinfo/i.test(s)) {
+    return '⚠️ AI chưa kết nối được từ server này. API cấu hình hiện tại không truy cập được từ host public — admin hãy đặt biến môi trường ZAI_OPENAI_JSON với API key public (api.z.ai) hoặc chạy site ở môi trường có truy cập API nội bộ.';
+  }
+  return s;
+}
+async function oaChatOnce(messages, model, extra = {}) {
+  const r = await oaPost('/chat/completions', {
+    model: model || OPENAI_CFG.chat, messages, stream: false,
+    thinking: { type: 'disabled' }, ...extra,
+  });
+  const j = await r.json();
+  return j?.choices?.[0]?.message?.content || '';
+}
+async function oaBrainAnalysis(res, lastQuestion, hadSearch) {
+  try {
+    const sys = 'Bạn là module phân tích của Dungle AI (bộ não phụ trợ). Nhiệm vụ: đọc câu hỏi và nêu quá trình xử lý trong 2-4 câu ngắn tiếng Việt, gồm: (1) hiểu yêu cầu là gì, (2) kế hoạch/bước sẽ làm, (3) kết luận hướng trả lời. KHÔNG trả lời nội dung câu hỏi, chỉ phân tích cách làm. Viết mạch lạc, không markdown, không xuống dòng.';
+    const text = await oaChatOnce([
+      { role: 'system', content: sys },
+      { role: 'user', content: String(lastQuestion).slice(0, 1500) + (hadSearch ? ' (Đã có kết quả tìm kiếm web kèm theo để đối chiếu.)' : '') },
+    ], OPENAI_CFG.flash);
+    if (text.trim()) sseSend(res, { type: 'analysis', text: text.trim().slice(0, 700) });
+  } catch { /* bỏ qua nếu phân tích lỗi */ }
+}
+function parseJsonLoose(t) {
+  try { return JSON.parse(t); } catch {}
+  const m = String(t).match(/\[[\s\S]*\]/);
+  try { return m ? JSON.parse(m[0]) : null; } catch { return null; }
+}
+async function oaSearch(query, num = 6) {
+  const text = await oaChatOnce([
+    { role: 'system', content: 'Bạn có công cụ tìm kiếm web. Chỉ xuất MỘT mảng JSON thuần (không markdown, không giải thích), mỗi phần tử: {"name": "tựa bài", "url": "link", "snippet": "trích ngắn 1-2 câu"} — tối đa ' + num + ' kết quả mới nhất, phù hợp câu hỏi.' },
+    { role: 'user', content: String(query).slice(0, 400) },
+  ], OPENAI_CFG.flash, { tools: [{ type: 'web_search', web_search: { enable: true } }] });
+  const arr = parseJsonLoose(text);
+  if (!Array.isArray(arr)) return [];
+  return arr.slice(0, num).map((r) => ({
+    name: r.name || r.title || 'Kết quả',
+    url: r.url || r.link || '',
+    snippet: r.snippet || r.content || r.description || '',
+    host: (r.url || r.link || '').replace(/^https?:\/\//, '').split('/')[0],
+  })).filter((r) => r.url);
+}
+async function handleChatPublic(res, user, body, mode, deepThink, history, images) {
+  sseInit(res);
+  const send = (o) => sseSend(res, o);
+  try {
+    send({ type: 'phase', phase: 'read' });
+    const lastUser = [...history].reverse().find((m) => m.role === 'user')?.content || '';
+    if (mode === 'agent' || body.search) {
+      send({ type: 'status', text: 'Đang tìm kiếm thông tin trên web…' });
+      try {
+        const srcs = await oaSearch(lastUser, 6);
+        if (srcs.length) {
+          send({ type: 'sources', sources: srcs });
+          const webCtx = 'KẾT QUẢ TÌM KIẾM WEB (nguồn mới nhất, hãy trích dẫn kèm link khi dùng):\n' +
+            srcs.map((s, i) => '[' + (i + 1) + '] ' + s.name + '\nURL: ' + s.url + '\nTrích: ' + s.snippet).join('\n---\n');
+          history.push({ role: 'user', content: webCtx + '\n\nCÂU HỎI NGƯỜI DÙNG: ' + lastUser });
+        } else send({ type: 'status', text: 'Không tìm được web, trả lời bằng kiến thức sẵn có.' });
+      } catch { send({ type: 'status', text: 'Không tìm được web, trả lời bằng kiến thức sẵn có.' }); }
+    }
+    send({ type: 'phase', phase: 'analyze' });
+    if (deepThink || mode === 'agent') await oaBrainAnalysis(res, lastUser + (images && images.length ? ' (+ người dùng gửi kèm ảnh)' : ''), mode === 'agent' || body.search);
+    send({ type: 'phase', phase: 'answer' });
+
+    const sysParts = [DUNGLE_IDENTITY];
+    if (mode === 'agent') sysParts.push(AGENT_RULE);
+    if (user && user.role === 'admin' && process.env.DUNGLE_PERSONA) sysParts.push('GHI CHÚ NHÂN CÁCH: ' + process.env.DUNGLE_PERSONA);
+
+    let msgs;
+    if (images && images.length) {
+      const items = images.slice(0, 4).map((url) => ({ type: 'image_url', image_url: { url } }));
+      const textPart = history.length ? history[history.length - 1].content : 'Hãy phân tích ảnh này.';
+      items.push({ type: 'text', text: textPart });
+      msgs = [{ role: 'system', content: sysParts.join('\n\n') }];
+      if (history.length > 1) for (const m of history.slice(0, -1)) msgs.push(m);
+      msgs.push({ role: 'user', content: items });
+    } else {
+      msgs = [{ role: 'system', content: sysParts.join('\n\n') }, ...history];
+    }
+    const r = await oaPost('/chat/completions', {
+      model: images && images.length ? OPENAI_CFG.vision : (MODELS[mode] === MODELS.glm46 ? OPENAI_CFG.chat : OPENAI_CFG.flash),
+      messages: msgs, stream: true,
+      thinking: { type: deepThink ? 'enabled' : 'disabled' },
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error('API trả lỗi ' + r.status + ': ' + t.slice(0, 160));
+    }
+    consumeUse(user);
+    await pipeStream(r.body, res, send);
+  } catch (e) {
+    send({ type: 'error', text: friendlyError(e) });
+    send({ type: 'done' });
+    res.end();
+  }
+}
+
 // ---------- "Bộ não" phân tích nhanh trước khi trả lời ----------
 async function brainAnalysis(res, lastQuestion, hadSearch) {
   try {
@@ -330,6 +456,7 @@ async function handleChat(req, res, user) {
   const deepThink = mode === 'agent' ? true : !!thinking;
   const history = normalizeMessages(messages);
   if (!history.length && !(images && images.length)) return json(res, 400, { error: 'Thiếu nội dung tin nhắn' });
+  if (OPENAI_CFG) return handleChatPublic(res, user, body, mode, deepThink, history, images);
 
   sseInit(res);
   const send = (o) => sseSend(res, o);
@@ -389,7 +516,7 @@ async function handleChat(req, res, user) {
     consumeUse(user);
     await pipeStream(stream, res, send);
   } catch (e) {
-    send({ type: 'error', text: e?.message || String(e) });
+    send({ type: 'error', text: friendlyError(e) });
     send({ type: 'done' });
     res.end();
   }
@@ -399,6 +526,7 @@ async function handleChat(req, res, user) {
 async function handleImage(req, res, user) {
   const { prompt, size } = await readBody(req);
   if (!prompt) return json(res, 400, { error: 'Thiếu mô tả ảnh' });
+  if (OPENAI_CFG) return handleImagePublic(res, user, prompt, size);
   const okSizes = ['1024x1024', '768x1344', '864x1152', '1344x768', '1152x864', '1440x720', '720x1440'];
   try {
     const zai = await getZAI();
@@ -411,14 +539,41 @@ async function handleImage(req, res, user) {
     consumeUse(user);
     json(res, 200, { base64: b64 });
   } catch (e) {
-    json(res, 500, { error: e?.message || String(e) });
+    json(res, 500, { error: friendlyError(e) });
   }
+}
+async function handleImagePublic(res, user, prompt, size) {
+  const okSizes = ['1024x1024', '768x1344', '864x1152', '1344x768', '1152x864', '1440x720', '720x1440'];
+  try {
+    const r = await oaPost('/images/generations', {
+      model: OPENAI_CFG.image,
+      prompt: String(prompt).slice(0, 2000),
+      size: okSizes.includes(size) ? size : '1024x1024',
+    });
+    const j = await r.json();
+    let b64 = j?.data?.[0]?.b64_json || '';
+    if (!b64 && j?.data?.[0]?.url) {
+      const img = await fetch(j.data[0].url);
+      const ab = await img.arrayBuffer();
+      b64 = Buffer.from(ab).toString('base64');
+    }
+    if (!b64) return json(res, 502, { error: j?.error?.message || 'API không trả về ảnh' });
+    consumeUse(user);
+    json(res, 200, { base64: b64 });
+  } catch (e) { json(res, 500, { error: friendlyError(e) }); }
 }
 
 // ---------- /api/search, /api/tts, /api/asr ----------
 async function handleSearch(req, res) {
   const { query, num, recency_days } = await readBody(req);
   if (!query) return json(res, 400, { error: 'Thiếu từ khoá' });
+  if (OPENAI_CFG) {
+    try {
+      const results = await oaSearch(query, num || 8);
+      json(res, 200, { results });
+    } catch (e) { json(res, 500, { error: friendlyError(e) }); }
+    return;
+  }
   try {
     const zai = await getZAI();
     const results = await zai.functions.invoke('web_search', { query: String(query).slice(0, 400), num: num || 8, recency_days });
@@ -428,6 +583,7 @@ async function handleSearch(req, res) {
 async function handleTTS(req, res) {
   const { text, voice, speed } = await readBody(req);
   if (!text) return json(res, 400, { error: 'Thiếu văn bản' });
+  if (OPENAI_CFG) return json(res, 503, { error: 'Tính năng giọng nói cần API nội bộ của z.ai — chưa khả dụng trên server public này.' });
   try {
     const zai = await getZAI();
     const resp = await zai.audio.tts.create({ input: String(text).slice(0, 1500), voice, speed, response_format: 'wav' });
@@ -444,6 +600,7 @@ async function handleASR(req, res) {
   const m = String(base64).match(/^data:[^;]+;base64,([\s\S]*)$/);
   if (m) base64 = m[1];
   base64 = String(base64).replace(/\s+/g, '');
+  if (OPENAI_CFG) return json(res, 503, { error: 'Tính năng nhận dạng giọng nói cần API nội bộ của z.ai — chưa khả dụng trên server public này.' });
   try {
     const zai = await getZAI();
     const out = await zai.audio.asr.create({ file_base64: base64 });
