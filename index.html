@@ -423,6 +423,24 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
   .modebtn .mname{max-width:64px}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* ---- Donate admin (VietQR) ---- */
+#donateModal{position:fixed;inset:0;z-index:100;display:none;place-items:center;background:rgba(0,0,0,.72);backdrop-filter:blur(6px);padding:16px}
+#donateModal.show{display:grid}
+.donate-card{background:var(--surface);border:1px solid var(--border);border-radius:20px;max-width:420px;width:100%;max-height:92vh;overflow:auto;padding:24px 22px;box-shadow:var(--shadow);position:relative;text-align:center;color:var(--text)}
+.donate-card .close{position:absolute;top:12px;right:12px;color:var(--muted);width:36px;height:36px;border-radius:10px;background:transparent;display:grid;place-items:center}
+.donate-card .close:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.donate-head{font-size:17px;font-weight:800;letter-spacing:.2px}
+.donate-qr{width:min(70vw,250px);aspect-ratio:1;border-radius:14px;background:#fff;padding:8px;display:block;margin:14px auto 10px;box-shadow:var(--shadow)}
+.donate-caption{font-weight:700;font-size:15px;margin-top:4px}
+.donate-sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+.donate-rows{margin-top:16px;display:flex;flex-direction:column;gap:8px;text-align:left}
+.donate-row{display:flex;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:9px 12px;font-size:13px}
+.donate-row .k{color:var(--muted);min-width:96px;flex:none}
+.donate-row .v{flex:1;font-weight:600;word-break:break-all}
+.donate-copy{flex:none;border:1px solid var(--border);background:transparent;color:var(--text);font-size:12px;font-weight:700;border-radius:9px;padding:5px 10px;cursor:pointer}
+.donate-copy:hover{background:rgba(255,255,255,.08)}
+.donate-note{margin-top:14px;font-size:12px;color:var(--muted);line-height:1.55}
+@media (max-width:640px){.donate-card{padding:20px 16px}.donate-row .k{min-width:84px;font-size:12px}}
 </style>
 </head>
 <body>
@@ -435,6 +453,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m21 15-4.5-4.5L7 20"/></symbol>
 <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18 15 15 0 0 1 0-18"/></symbol>
 <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 4.5a3 3 0 0 0-3 3c-1.7.3-3 1.7-3 3.5 0 1 .4 1.9 1 2.5-.6.6-1 1.5-1 2.5A3.5 3.5 0 0 0 9.5 19c.6 1 1.5 1.5 2.5 1.5s1.9-.5 2.5-1.5a3.5 3.5 0 0 0 3.5-3.5c0-1-.4-1.9-1-2.5.6-.6 1-1.5 1-2.5 0-1.8-1.3-3.2-3-3.5a3 3 0 0 0-3-3z"/><path d="M12 4.5v16"/></symbol>
+<symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20.5S4.6 15.7 2.6 11.4C1.2 8.3 3.2 5 6.4 5c2 0 3.5 1.1 4.4 2.5h2.4C14.1 6.1 15.6 5 17.6 5c3.2 0 5.2 3.3 3.8 6.4-2 4.3-9.4 9.1-9.4 9.1z"/></symbol>
 <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
 <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
 <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></symbol>
@@ -473,10 +492,10 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
     <h1>Dungle AI</h1>
     <p class="sub">Trợ lý AI toàn năng của <b>Dũng Lê</b> — trò chuyện thông minh, giải bài tập từng bước, viết code, hiểu ảnh, vẽ tranh và tìm tin mới nhất. Không cài đặt, mở web là dùng.</p>
     <div class="cta">
-      <button class="btn grad" id="lStart2">Dùng thử miễn phí&nbsp;·&nbsp;3 lượt</button>
+      <button class="btn grad" id="lStart2">Dùng thử miễn phí&nbsp;·&nbsp;3 lượt/ngày</button>
       <button class="btn ghost" id="lLogin2">Đăng nhập bằng Google</button>
     </div>
-    <div class="note">Người dùng mới được miễn phí 3 lượt — không cần thẻ tín dụng.</div>
+    <div class="note">Miễn phí 3 lượt mỗi ngày — qua đêm 00:00 token tự reset để dùng tiếp, không cần thẻ tín dụng.</div>
     <div class="lstats">
       <div class="lstat"><b id="statUsers">100+</b><span>người dùng</span></div>
       <div class="lstat"><b>6</b><span>giao diện</span></div>
@@ -515,7 +534,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
         <svg viewBox="0 0 24 24"><path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.66-.22-2.45H12v4.64h6.45a5.52 5.52 0 0 1-2.39 3.62v3h3.86c2.26-2.09 3.58-5.17 3.58-8.81z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.94-2.91l-3.86-3c-1.08.72-2.45 1.16-4.08 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09A11.99 11.99 0 0 0 12 24z"/><path fill="#FBBC05" d="M5.27 14.29A7.2 7.2 0 0 1 4.89 12c0-.8.14-1.57.38-2.29V6.62H1.29a12 12 0 0 0 0 10.76l3.98-3.09z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42A11.97 11.97 0 0 0 12 0 11.99 11.99 0 0 0 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75z"/></svg>
         Tiếp tục với Google
       </button>
-      <div class="auth-note">Đăng ký mới = miễn phí 3 lượt dùng · Liên hệ quản trị viên để được hỗ trợ</div>
+      <div class="auth-note">Mỗi máy (IP) chỉ tạo được 1 tài khoản · miễn phí 3 lượt/ngày, token tự reset 00:00 · cần thêm xin liên hệ admin</div>
     </div>
   </div>
 </div>
@@ -533,6 +552,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
     </div>
     <div id="convList"></div>
     <div class="side-foot">
+      <button class="pop-item" id="btnDonate"><svg class="ic sm"><use href="#i-heart"/></svg>Donate admin ❤️</button>
       <button class="pop-item" id="btnTheme2"><svg class="ic sm"><use href="#i-palette"/></svg>Đổi giao diện</button>
       <div class="creator"><img src="/avatars/ai.jpg" alt="Dungle AI">Được tạo bởi&nbsp;<b>Dũng Lê</b></div>
     </div>
@@ -575,6 +595,7 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
         </div>
         <div class="userdrop" id="userDrop">
           <div class="ud-info"><b id="udName">—</b><div class="uq" id="udQuota">—</div></div>
+          <button class="pop-item" id="btnDonate2"><svg class="ic sm"><use href="#i-heart"/></svg>Donate admin</button>
           <button class="pop-item" id="btnAdmin" hidden><svg class="ic sm"><use href="#i-shield"/></svg>Quản trị website</button>
           <button class="pop-item" id="btnExport"><svg class="ic sm"><use href="#i-down"/></svg>Lưu đoạn chat ra file</button>
           <button class="pop-item danger" id="btnWipe"><svg class="ic sm"><use href="#i-trash"/></svg>Xoá lịch sử trên máy</button>
@@ -667,6 +688,26 @@ main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
 
 <!-- Zoom ảnh + toast -->
 <div id="imgModal"><button class="close" id="imgClose"><svg class="ic"><use href="#i-x"/></svg></button><img id="imgModalImg" alt="Xem ảnh lớn"></div>
+
+<!-- Donate admin — VietQR tự sinh từ STK MB Bank của admin -->
+<div id="donateModal">
+  <div class="donate-card">
+    <button class="close" id="donateClose" title="Đóng"><svg class="ic"><use href="#i-x"/></svg></button>
+    <div class="donate-head">❤️ Donate admin</div>
+    <img id="donateQR" class="donate-qr" alt="QR donate MB Bank — Dungle AI"
+      src="https://img.vietqr.io/image/970422-13300066778899-compact2.png?addInfo=donate%20dunglecute&amp;accountName=LE%20TIEN%20DUNG">
+    <div class="donate-caption">donate dunglecute hẹ hẹ 🤭</div>
+    <div class="donate-sub">Quét QR bằng bất kỳ app ngân hàng nào — tiền vào thẳng MB Bank của admin</div>
+    <div class="donate-rows">
+      <div class="donate-row"><span class="k">Ngân hàng</span><span class="v">MB Bank (Ngân hàng Quân Đội)</span></div>
+      <div class="donate-row"><span class="k">Số tài khoản</span><span class="v">13300066778899</span><button class="donate-copy" id="btnCopySTK" title="Copy số tài khoản">Copy</button></div>
+      <div class="donate-row"><span class="k">Chủ tài khoản</span><span class="v">LE TIEN DUNG</span></div>
+      <div class="donate-row"><span class="k">Nội dung CK</span><span class="v">donate dunglecute</span></div>
+    </div>
+    <div class="donate-note">QR tạo tự động theo chuẩn VietQR (nguồn img.vietqr.io). Mọi ủng hộ đều được trân trọng — cảm ơn bạn rất nhiều! 🥰</div>
+  </div>
+</div>
+
 <div id="toasts"></div>
 <script>
 'use strict';
@@ -951,13 +992,13 @@ function renderUser() {
   $('#udName').textContent = me.name + ' (@' + me.username + ')';
   $('#udQuota').innerHTML = me.unlimited
     ? ICON('shield', 'sm') + ' Tài khoản admin — dùng vô hạn, token vô hạn'
-    : ICON('coin', 'sm') + ' Đã dùng ' + me.used + '/' + me.limit + ' lượt miễn phí';
+    : ICON('coin', 'sm') + ' Đã dùng ' + me.used + '/' + me.limit + ' lượt miễn phí · token reset 00:00 hằng ngày';
   $('#btnAdmin').hidden = me.role !== 'admin';
   const q = $('#quotaBar');
   if (me.unlimited) { q.classList.remove('show'); }
   else {
     q.classList.add('show');
-    $('#quotaText').innerHTML = 'Lượt dùng: <b>' + quotaLeft() + '/' + me.limit + '</b>' + (quotaLeft() <= 1 ? ' — hết sẽ cần admin cấp thêm' : '');
+    $('#quotaText').innerHTML = 'Lượt dùng: <b>' + quotaLeft() + '/' + me.limit + '</b> · token reset 00:00 hằng ngày' + (quotaLeft() <= 1 ? ' — hết thì chờ qua đêm, hoặc xin <b>admin cấp token</b>' : '');
   }
 }
 async function afterAuth(user) { me = user; $('#authErr').textContent = ''; renderUser(); if (!convs.length || !active()) { if (!activeId) newChat(); } renderAll(); }
@@ -1028,6 +1069,7 @@ async function loadAdmin() {
         '<td>' + (u.used || 0) + '</td><td>' + lim + '</td>' +
         '<td>' + (u.created ? new Date(u.created).toLocaleDateString('vi-VN') : '—') + '</td>' +
         '<td>' + (u.role === 'admin' ? '<span style="color:var(--muted);font-size:11px">Tài khoản gốc</span>' :
+          '<button class="abtn" data-adm="grant" data-id="' + u.id + '" data-un="' + esc(u.username) + '">+Token</button>' +
           '<button class="abtn" data-adm="unlim" data-id="' + u.id + '">Vô hạn</button>' +
           '<button class="abtn" data-adm="lim10" data-id="' + u.id + '">+10</button>' +
           '<button class="abtn" data-adm="lim3" data-id="' + u.id + '">3</button>' +
@@ -1042,6 +1084,11 @@ $('#adminRows').addEventListener('click', async (e) => {
   const id = b.dataset.id, act = b.dataset.adm;
   try {
     let url = '', body = {};
+    if (act === 'grant') {
+      const n = prompt('Cấp thêm bao nhiêu token cho @' + b.dataset.un + '?\n(Cộng vào token hôm nay — qua đêm 00:00 sẽ reset về mức mặc định)', '5');
+      if (!n || !(+n > 0)) return;
+      url = '/api/admin/users/' + id + '/grant'; body = { add: Math.floor(+n) };
+    }
     if (act === 'unlim') { url = '/api/admin/users/' + id + '/limit'; body = { limit: null }; }
     if (act === 'lim10') { url = '/api/admin/users/' + id + '/limit'; body = { limit: 10 }; }
     if (act === 'lim3') { url = '/api/admin/users/' + id + '/limit'; body = { limit: 3 }; }
@@ -1320,10 +1367,12 @@ function browserSpeak(text) {
     toast('Đang đọc bằng giọng trình duyệt');
   } catch (e) { toast('Không đọc được: ' + e.message, true); }
 }
-function copyText(t) {
-  if (navigator.clipboard) return navigator.clipboard.writeText(t).then(() => toast('Đã sao chép'));
-  const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta);
-  ta.select(); document.execCommand('copy'); ta.remove(); toast('Đã sao chép');
+async function copyText(t) {
+  try {
+    if (navigator.clipboard) { await navigator.clipboard.writeText(t); return toast('Đã sao chép'); }
+  } catch { /* rơi xuống fallback bên dưới */ }
+  const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Đã sao chép');
 }
 
 /* ---------------- Flags & mode ---------------- */
@@ -1440,6 +1489,31 @@ $('#chat').addEventListener('click', async (e) => {
 $('#imgModal').onclick = (e) => { if (e.target.id !== 'imgModalImg') $('#imgModal').classList.remove('show'); };
 $('#imgClose').onclick = () => $('#imgModal').classList.remove('show');
 
+/* ---------------- Donate admin (VietQR) ---------------- */
+// QR chính: img.vietqr.io (BIN 970422 = MB Bank, STK + CTK của admin). Nếu nguồn lỗi → tự sinh payload chuẩn VietQR rồi vẽ QR qua quickchart.
+const donateQR = $('#donateQR');
+const DONATE = { bank: '970422', stk: '13300066778899', name: 'LE TIEN DUNG', info: 'donate dunglecute' };
+function vietqrPayload(bank, stk, info) {
+  const t = (id, v) => id + String(v.length).padStart(2, '0') + v;
+  const m = t('00', '01') + t('01', '11') + t('33', t('00', 'A000000727') + t('01', bank) + t('02', stk)) +
+    t('53', '704') + t('58', 'VN') + t('62', t('08', info)) + '6304';
+  let crc = 0xFFFF; // CRC16-CCITT-FALSE
+  for (const ch of m) { crc ^= ch.charCodeAt(0) << 8; for (let i = 0; i < 8; i++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xFFFF : (crc << 1) & 0xFFFF; }
+  return m + crc.toString(16).toUpperCase().padStart(4, '0');
+}
+donateQR.onerror = () => {
+  if (donateQR.dataset.fb) return;
+  donateQR.dataset.fb = '1';
+  toast('Nguồn QR chính bị lỗi — đang dùng QR dự phòng', true);
+  donateQR.src = 'https://quickchart.io/qr?size=320&text=' + encodeURIComponent(vietqrPayload(DONATE.bank, DONATE.stk, DONATE.info));
+};
+function openDonate() { closePops(); donateQR.dataset.fb = ''; $('#donateModal').classList.add('show'); }
+$('#btnDonate').onclick = openDonate;
+$('#btnDonate2').onclick = openDonate;
+$('#donateClose').onclick = () => $('#donateModal').classList.remove('show');
+$('#donateModal').onclick = (e) => { if (e.target.id === 'donateModal') $('#donateModal').classList.remove('show'); };
+$('#btnCopySTK').onclick = () => copyText(DONATE.stk);
+
 // Sidebar
 $('#convList').onclick = (e) => {
   const del = e.target.closest('[data-del]');
@@ -1475,6 +1549,7 @@ async function boot() {
     const w = h.slice(6);
     if (w === 'google-disabled') toast('Google OAuth chưa cấu hình trên server — dùng đăng ký trực tiếp nhé.', true);
     else if (w === 'google-failed') toast('Đăng nhập Google thất bại, thử lại.', true);
+    else if (w === 'ip-limit') toast('Mỗi máy chỉ được tạo một tài khoản — máy này đã có acc rồi. Đăng nhập acc cũ nhé (hết token chờ qua đêm là reset).', true);
     history.replaceState(null, '', location.pathname);
   }
 }

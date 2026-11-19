@@ -61,11 +61,11 @@ function loadDB() {
   for (const f of [DB_PATH, DB_PATH + '.bak']) {
     try {
       const j = JSON.parse(fs.readFileSync(f, 'utf-8'));
-      if (j && Array.isArray(j.users) && j.users.length) { db = j; return; }
-      if (j && Array.isArray(j.users)) { db = j; return; }
+      if (j && Array.isArray(j.users) && j.users.length) { db = j; if (!db.ips) db.ips = {}; return; }
+      if (j && Array.isArray(j.users)) { db = j; if (!db.ips) db.ips = {}; return; }
     } catch { /* thử file kế tiếp */ }
   }
-  db = { users: [] };
+  db = { users: [], ips: {} };
 }
 function saveDB() {
   // Ghi nguyên tử (tmp + rename) và giữ bản backup — tránh file hỏng khi crash.
@@ -86,6 +86,50 @@ function hashPassword(pw, salt) {
   return { salt, hash };
 }
 function findUser(id) { return db.users.find((u) => u.id === id) || null; }
+
+// ---------- Token hằng ngày + giới hạn 1 IP / 1 tài khoản ----------
+function todayVN() {
+  // Ngày theo giờ Việt Nam — qua 00:00 (giờ VN) là sang ngày mới → token tự reset
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
+}
+function dailyResetUser(u) {
+  // Mỗi ngày token reset về mặc định: used về 0, limit về FREE_USES → user "sài tiếp"
+  // không cần tạo acc mới. Admin và tài khoản được cấp "Vô hạn" (limit null) không bị reset.
+  const d = todayVN();
+  if (u.role === 'admin' || u.limit === null) { if (u.day !== d) { u.day = d; } return false; }
+  if (u.day === d) return false;
+  u.day = d;
+  u.used = 0;
+  u.limit = FREE_USES;
+  return true;
+}
+function dailyResetAll() {
+  let changed = false;
+  for (const u of db.users) if (dailyResetUser(u)) changed = true;
+  if (changed) saveDB();
+  return changed;
+}
+function clientIP(req) {
+  // IP thật của máy người dùng. Server đứng sau proxy (Render): x-forwarded-for có dạng
+  // "ip-client-tự-gửi, ip-proxy-thêm" → đi từ PHẢI sang TRÁI, bỏ qua IP nội bộ/proxy,
+  // lấy IP công khai đầu tiên → client không thể giả mạo header để lách giới hạn 1 IP/1 acc.
+  const xf = String(req.headers['x-forwarded-for'] || '');
+  const parts = xf.split(',').map((s) => s.trim()).filter(Boolean);
+  const isPrivate = (ip) => /^(::1$|f[0-9a-f]{2}:|fe80:|10\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const ip = parts[i].replace(/^::ffff:/, '');
+    if (!isPrivate(ip)) return ip;
+  }
+  const sock = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+  return sock || 'unknown'; // chạy local không qua proxy → 127.0.0.1 dùng làm khoá bình thường
+}
+function ipOwner(ip) {
+  // Tài khoản đã chiếm IP này (mapping lưu USERNAME; tự dọn nếu acc đó đã bị xoá)
+  if (!ip || ip === 'unknown' || !db.ips) return null;
+  const rec = db.ips[ip];
+  if (!rec) return null;
+  return db.users.find((u) => u.username === rec.user) ? rec.user : null;
+}
 
 function ensureAdmin() {
   if (db.users.find((u) => u.username === ADMIN_USER)) return;
@@ -172,7 +216,10 @@ migrateIds();
     // Trộn: bản remote làm nền, giữ thêm tài khoản local chưa kịp đẩy lên remote
     const names = new Set(remote.users.map((u) => u.username));
     for (const u of db.users) if (!names.has(u.username)) remote.users.push(u);
+    const localIps = db.ips || {};                       // giữ mapping IP của acc local chưa có trên remote
     db = remote;
+    if (!db.ips) db.ips = {};
+    for (const k of Object.keys(localIps)) if (!db.ips[k]) db.ips[k] = localIps[k];
     ensureAdmin();
     migrateIds();
     console.log('  [GitHub sync] Đã nạp users.json từ repo (' + db.users.length + ' tài khoản)');
@@ -201,7 +248,10 @@ function currentUser(req) {
   if (i < 0) return null;
   const id = c.slice(0, i), sig = c.slice(i + 1);
   if (sign(id) !== sig) return null;
-  return findUser(id);
+  const u = findUser(id);
+  // Sang ngày mới (00:00 giờ VN) → token của user tự reset về mức miễn phí
+  if (u && dailyResetUser(u)) saveDB();
+  return u;
 }
 function sessionInfo(req) {
   const c = parseCookies(req)['dungle_sid'];
@@ -810,12 +860,17 @@ async function handleASR(req, res) {
 
 // ---------- Auth ----------
 async function handleRegister(req, res) {
+  const ip = clientIP(req);
   const { username, password, name } = await readBody(req);
   const un = String(username || '').trim().toLowerCase();
   if (!/^[a-z0-9_.-]{3,24}$/.test(un)) return json(res, 400, { error: 'Tên đăng nhập 3-24 ký tự (a-z, 0-9, _ . -)' });
   if (String(password || '').length < 4) return json(res, 400, { error: 'Mật khẩu tối thiểu 4 ký tự' });
   if (un === ADMIN_USER) return json(res, 400, { error: 'Tên đăng nhập này đã được đặt trước' });
   if (db.users.find((u) => u.username === un)) return json(res, 400, { error: 'Tên đăng nhập đã tồn tại' });
+  // Giới hạn: mỗi IP máy chỉ được tạo MỘT tài khoản. Token reset mỗi ngày nên
+  // hết token chỉ cần chờ qua đêm (00:00 giờ VN) là dùng tiếp, không cần acc mới.
+  const owner = ipOwner(ip);
+  if (owner) return json(res, 403, { error: 'Mỗi máy (IP) chỉ được tạo một tài khoản — máy này đã có tài khoản "' + owner + '". Hãy đăng nhập tài khoản đó; hết token thì chờ qua đêm, ngày mai token tự reset để dùng tiếp.' });
   const a = hashPassword(String(password));
   const u = {
     id: userIdFor(un),
@@ -823,9 +878,11 @@ async function handleRegister(req, res) {
     pass_hash: a.hash, salt: a.salt,
     provider: 'local',
     avatar: 1 + Math.floor(Math.random() * 8),
-    role: 'user', limit: FREE_USES, used: 0, created: Date.now(),
+    role: 'user', limit: FREE_USES, used: 0, day: todayVN(), created: Date.now(),
   };
-  db.users.push(u); saveDB();
+  db.users.push(u);
+  (db.ips = db.ips || {})[ip] = { user: un, ts: Date.now() };
+  saveDB();
   json(res, 200, { ok: true, user: publicUser(u) }, { 'Set-Cookie': makeCookie(u) });
 }
 async function handleLogin(req, res) {
@@ -883,15 +940,21 @@ async function handleGoogleCallback(req, res) {
     if (!info.email) return back('google-failed');
     let user = db.users.find((x) => x.provider === 'google' && x.email === info.email);
     if (!user) {
+      // Giới hạn 1 IP / 1 tài khoản — áp dụng cả đăng ký bằng Google
+      const ip = clientIP(req);
+      const owner = ipOwner(ip);
+      if (owner) return back('ip-limit');
       user = {
         id: userIdFor('g:' + info.email),
         username: info.email.split('@')[0].toLowerCase().replace(/[^a-z0-9_.-]/g, '') + '_' + crypto.randomBytes(2).toString('hex'),
         name: info.name || info.email.split('@')[0], email: info.email,
         pass_hash: '', salt: '', provider: 'google',
         avatar: 1 + Math.floor(Math.random() * 8),
-        role: 'user', limit: FREE_USES, used: 0, created: Date.now(),
+        role: 'user', limit: FREE_USES, used: 0, day: todayVN(), created: Date.now(),
       };
-      db.users.push(user); saveDB();
+      db.users.push(user);
+      (db.ips = db.ips || {})[ip] = { user: user.username, ts: Date.now() };
+      saveDB();
     }
     res.writeHead(302, { Location: '/', 'Set-Cookie': makeCookie(user) });
     res.end();
@@ -908,6 +971,7 @@ async function handleAdmin(req, res, p) {
   const admin = requireAdmin(req, res);
   if (!admin) return;
   if (p === '/api/admin/users' && req.method === 'GET') {
+    dailyResetAll(); // hiển thị số token mới nhất theo ngày
     return json(res, 200, { users: db.users.map(publicUser).sort((a, b) => b.created - a.created) });
   }
   const m = p.match(/^\/api\/admin\/users\/([\w-]+)\/(\w+)$/);
@@ -921,6 +985,13 @@ async function handleAdmin(req, res, p) {
       target.limit = (v === null || v === '') ? null : Math.max(0, Math.floor(+v || 0));
     } else if (m[2] === 'used') {
       target.used = Math.max(0, Math.floor(+body.used || 0));
+    } else if (m[2] === 'grant') {
+      // Admin cấp token cho một acc → CỘNG vào số token hôm nay của acc đó
+      if (target.role === 'admin') return json(res, 400, { error: 'Admin dùng vô hạn, không cần cấp token' });
+      if (target.limit === null) return json(res, 400, { error: 'Tài khoản này đang Vô hạn, không cần cấp token' });
+      const add = Math.max(1, Math.min(100000, Math.floor(+body.add || 0)));
+      target.limit = Math.max(0, Math.floor(target.limit || 0)) + add;
+      target.day = todayVN(); // tính trong ngày hôm nay (token này reset vào 00:00 mai)
     } else if (m[2] === 'role') {
       if (target.username === ADMIN_USER) return json(res, 400, { error: 'Không đổi được quyền admin gốc' });
       target.role = body.role === 'admin' ? 'admin' : 'user';
@@ -934,6 +1005,8 @@ async function handleAdmin(req, res, p) {
     if (!target) return json(res, 404, { error: 'Không tìm thấy user' });
     if (target.username === ADMIN_USER) return json(res, 400, { error: 'Không xoá được admin gốc' });
     db.users = db.users.filter((x) => x.id !== target.id);
+    // Xoá acc → giải phóng slot IP để máy đó có thể tạo acc mới
+    if (db.ips) for (const k of Object.keys(db.ips)) if (db.ips[k] && db.ips[k].user === target.username) delete db.ips[k];
     saveDB();
     return json(res, 200, { ok: true });
   }
