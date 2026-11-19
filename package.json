@@ -1,0 +1,16 @@
+{
+  "name": "dungle-ai",
+  "version": "1.0.0",
+  "description": "Dungle AI — website AI của Dũng Lê (chat, giải bài tập, code, đọc ảnh, vẽ ảnh, tìm web, giọng nói)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "z-ai-web-dev-sdk": "^0.0.18"
+  }
+}

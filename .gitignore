@@ -1,0 +1,7 @@
+node_modules/
+users.json
+users.json.bak
+users.json.tmp
+.z-ai-config
+*.log
+.env
